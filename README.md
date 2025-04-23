@@ -26,3 +26,6 @@
 2. Upload `main.py` for normal operation
 3. System will stabilize for 30 seconds, then begin monitoring
 4. LED will fade in when motion is detected, fade out 10 seconds after motion stops
+
+
+![Uploading IMG_0604.JPG…]()
