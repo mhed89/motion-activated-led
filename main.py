@@ -15,6 +15,10 @@ motion_timeout = 10          # Time to keep LED on after motion stops (seconds)
 last_motion_time = 0         # Time of last detected motion
 inverted_led = True          # Set to TRUE if LED gets dimmer with higher PWM values
 
+# AM312 specific settings
+am312_delay = 3              # AM312 has a typical 2-3 second delay after motion stops
+debounce_time = 0.2          # Time in seconds for debounce
+
 # Function to get timestamp
 def get_timestamp():
     return time.time()
@@ -24,57 +28,72 @@ def log_message(message):
     timestamp = get_timestamp()
     print(f"{timestamp}: {message}")
 
-# More efficient gamma correction with fewer lookup values
+# Pre-compute gamma correction table for efficiency
 gamma = 2.2
-gamma_steps = 10  # Use fewer steps for efficiency
+step = 1000  # Smaller step size for smoother fading
 gamma_table = {}
-for i in range(0, 101, gamma_steps):
-    # Map 0-100 to 0-65535 for PWM
-    gamma_table[i] = int(((i / 100.0) ** gamma) * 65535)
+for i in range(0, 65536, step):
+    gamma_table[i] = int((i / 65535.0) ** gamma * 65535)
 
-# Faster gamma correction function using percent-based values
-def set_led_brightness(percent):
-    # Ensure percent is within 0-100
-    percent = max(0, min(100, percent))
-    
-    # Get nearest key in gamma table
-    key = (percent // gamma_steps) * gamma_steps
-    corrected_duty = gamma_table.get(key, int(((percent / 100.0) ** gamma) * 65535))
-    
-    if inverted_led:
-        led_pwm.duty_u16(65535 - corrected_duty)
-    else:
-        led_pwm.duty_u16(corrected_duty)
+# Gamma correction function using lookup table
+def gamma_correct(value):
+    key = (value // step) * step
+    return gamma_table.get(key, int((value / 65535.0) ** gamma * 65535))
 
 # Function to smoothly fade in the LED (turn on)
-def fade_in(steps=10, fade_time=0.01):
-    for i in range(0, 101, steps):
-        set_led_brightness(i)
-        time.sleep(fade_time)
+def fade_in(led_pwm, step=1000, fade_time=0.003):
+    if inverted_led:
+        for raw_duty in range(65535, -1, -step):
+            corrected_duty = gamma_correct(raw_duty)
+            led_pwm.duty_u16(corrected_duty)
+            time.sleep(fade_time)
+    else:
+        for raw_duty in range(0, 65536, step):
+            corrected_duty = gamma_correct(raw_duty)
+            led_pwm.duty_u16(corrected_duty)
+            time.sleep(fade_time)
     
     # Ensure LED is fully on at the end
-    set_led_brightness(100)
-    log_message("LED on")
+    if inverted_led:
+        led_pwm.duty_u16(0)
+    else:
+        led_pwm.duty_u16(65535)
+    
+    log_message("LED faded in (turned ON)")
 
 # Function to smoothly fade out the LED (turn off)
-def fade_out(steps=10, fade_time=0.01):
-    for i in range(100, -1, -steps):
-        set_led_brightness(i)
-        time.sleep(fade_time)
+def fade_out(led_pwm, step=1000, fade_time=0.005):
+    if inverted_led:
+        for raw_duty in range(0, 65536, step):
+            corrected_duty = gamma_correct(raw_duty)
+            led_pwm.duty_u16(corrected_duty)
+            time.sleep(fade_time)
+    else:
+        for raw_duty in range(65535, -1, -step):
+            corrected_duty = gamma_correct(raw_duty)
+            led_pwm.duty_u16(corrected_duty)
+            time.sleep(fade_time)
     
     # Ensure LED is fully off at the end
-    set_led_brightness(0)
-    log_message("LED off")
+    if inverted_led:
+        led_pwm.duty_u16(65535)
+    else:
+        led_pwm.duty_u16(0)
+    
+    log_message("LED faded out (turned OFF)")
 
 # Function to completely turn off the LED
 def led_off():
-    set_led_brightness(0)
+    if inverted_led:
+        led_pwm.duty_u16(65535)  # For inverted LED, high PWM = off
+    else:
+        led_pwm.duty_u16(0)      # For standard LED, low PWM = off
 
-# AM312 motion detection with original reliable debounce logic
+# AM312 motion detection with debouncing
 def check_motion():
     raw_state = pir_sensor.value()
     
-    # Proven debounce algorithm - take 3 readings
+    # Simple debounce - take 3 readings
     if raw_state == 1:
         # Confirm with additional readings
         time.sleep(0.01)
@@ -85,42 +104,53 @@ def check_motion():
     
     return False
 
+# Cleanup function
+def cleanup():
+    led_off()
+    print("Program stopped")
+
 # Main loop
 try:
     log_message("AM312 Motion Detection System Started")
     led_off()
     
-    # Brief stabilization - AM312 typically only needs 5-10 seconds
-    log_message("Waiting for AM312 sensor to stabilize...")
-    time.sleep(10)  # Adjusted to 10 seconds for better stability
+    # Allow AM312 to stabilize
+    log_message("Waiting 30 seconds for AM312 sensor to stabilize...")
+    for i in range(30, 0, -10):
+        log_message(f"Stabilization: {i} seconds remaining...")
+        time.sleep(10)
     
-    log_message("System ready!")
+    log_message("System ready! Monitoring for motion...")
     
     while True:
         current_time = get_timestamp()
         
-        # Check for motion with proven reliable debouncing
+        # Check for motion with debouncing
         if check_motion():
-            # Motion detected - update the last motion time
+            # Motion detected
             last_motion_time = current_time
             
             # If LED is off, turn it on
             if not led_on:
-                log_message("Motion detected")
-                fade_in()
+                log_message("Motion detected - turning LED on")
+                fade_in(led_pwm)
                 led_on = True
         
         # If LED is on, check if it's time to turn it off
         if led_on and (current_time - last_motion_time > motion_timeout):
-            log_message("Motion timeout")
-            fade_out()
+            log_message("Motion timeout - turning LED off")
+            fade_out(led_pwm)
             led_on = False
         
-        time.sleep(0.05)  # Slightly faster checking for better responsiveness
+        # Periodically log the sensor state (every 30 seconds)
+        if int(current_time) % 30 == 0 and current_time - int(current_time) < 0.1:
+            log_message(f"System status: Motion sensor active, LED is {'ON' if led_on else 'OFF'}")
+        
+        time.sleep(0.1)  # Short delay for loop execution
 
 except KeyboardInterrupt:
     log_message("Keyboard interrupt detected")
-    led_off()
 except Exception as e:
     log_message(f"Error: {e}")
-    led_off()
+finally:
+    cleanup()
