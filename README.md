@@ -28,4 +28,5 @@
 4. LED will fade in when motion is detected, fade out 10 seconds after motion stops
 
 
-![Uploading IMG_0604.JPG…]()
+
+![IMG_0604](https://github.com/user-attachments/assets/02b80a7a-6664-4112-816b-822863b4eae7)
